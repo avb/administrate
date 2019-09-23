@@ -25,6 +25,7 @@ module Administrate
       READ_ONLY_ATTRIBUTES = %w[id created_at updated_at]
 
       class_option :namespace, type: :string, default: "admin"
+      class_option :routes, type: :boolean, default: true, description: "Insert admin routes for resource"
 
       source_root File.expand_path("../templates", __FILE__)
 
@@ -37,21 +38,32 @@ module Administrate
 
       def create_resource_controller
         destination = Rails.root.join(
-          "app/controllers/#{namespace}/#{file_name.pluralize}_controller.rb",
+          "app/controllers/#{admin_namespace}/#{file_name.pluralize}_controller.rb",
         )
 
         template("controller.rb.erb", destination)
       end
 
+      def admin_route
+        return unless options[:routes]
+
+        routes   = Rails.root.join("config/routes.rb")
+        content  = "resources :#{plural_route_name}\n"
+        sentinel = /namespace :#{admin_namespace}.*\n/
+        indent   = File.binread(routes)[/\n(\s*)namespace :#{admin_namespace}/, 1] || ""
+
+        inject_into_file routes, indent + "  " + content, after: sentinel
+      end
+
       private
 
-      def namespace
+      def admin_namespace
         options[:namespace]
       end
 
       def attributes
         klass.reflections.keys +
-          klass.columns.map(&:name) -
+          klass.attribute_names -
           redundant_attributes
       end
 
@@ -72,6 +84,10 @@ module Administrate
         when "Field::BelongsTo"
           relationship + "_id"
         end
+      end
+
+      def attr_name(attribute)
+        attribute.gsub(/rich_text_/, '')
       end
 
       def field_type(attribute)
@@ -99,17 +115,22 @@ module Administrate
       end
 
       def column_types(attr)
+        klass.columns.find { |column| column.name == attr }.try(:type)
         if klass.respond_to?(:attribute_types)
           klass.attribute_types[attr].type
         else
-          klass.columns.detect { |column| column.name == attr }.try(:type)
+          klass.columns.find { |column| column.name == attr }.try(:type)
         end
       end
 
       def association_type(attribute)
         relationship = klass.reflections[attribute.to_s]
         if relationship.has_one?
-          "Field::HasOne"
+          if relationship.options[:class_name] == "ActionText::RichText"
+            "Field::RichText"
+          else
+            "Field::HasOne"
+          end
         elsif relationship.collection?
           "Field::HasMany" + relationship_options_string(relationship)
         elsif relationship.polymorphic?
